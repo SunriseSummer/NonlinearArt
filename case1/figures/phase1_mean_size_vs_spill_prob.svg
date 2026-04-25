@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560">
+<style>text{font-family:Arial,sans-serif} .grid{stroke:#ddd;stroke-width:1} .axis{stroke:#222;stroke-width:2}</style>
+<text x="450.0" y="35" font-size="24" text-anchor="middle">Phase 1: Mean avalanche size when tuning spill probability</text>
+<line class="axis" x1="90" y1="470" x2="870" y2="470"/>
+<line class="axis" x1="90" y1="70" x2="90" y2="470"/>
+<text x="450.0" y="535" font-size="18" text-anchor="middle">Spill probability p</text>
+<text x="25" y="280.0" font-size="18" text-anchor="middle" transform="rotate(-90 25,280.0)">Mean avalanche size</text>
+<line class="grid" x1="90.0" y1="70" x2="90.0" y2="470"/>
+<line class="grid" x1="90" y1="70.0" x2="870" y2="70.0"/>
+<line class="grid" x1="246.0" y1="70" x2="246.0" y2="470"/>
+<line class="grid" x1="90" y1="150.0" x2="870" y2="150.0"/>
+<line class="grid" x1="402.0" y1="70" x2="402.0" y2="470"/>
+<line class="grid" x1="90" y1="230.0" x2="870" y2="230.0"/>
+<line class="grid" x1="558.0" y1="70" x2="558.0" y2="470"/>
+<line class="grid" x1="90" y1="310.0" x2="870" y2="310.0"/>
+<line class="grid" x1="714.0" y1="70" x2="714.0" y2="470"/>
+<line class="grid" x1="90" y1="390.0" x2="870" y2="390.0"/>
+<line class="grid" x1="870.0" y1="70" x2="870.0" y2="470"/>
+<line class="grid" x1="90" y1="470.0" x2="870" y2="470.0"/>
+<line x1="591.4285714285713" y1="70" x2="591.4285714285713" y2="470" stroke="#b00" stroke-dasharray="6 4" stroke-width="2"/>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="90.00,423.80 145.71,442.50 201.43,358.50 257.14,470.00 312.86,360.33 368.57,285.29 424.29,365.62 480.00,250.29 535.71,242.78 591.43,161.04 647.14,195.01 702.86,164.52 758.57,140.76 814.29,123.64 870.00,70.00"/>
+<rect x="100" y="68" width="18" height="10" fill="#1f77b4"/>
+<text x="125" y="77" font-size="14">Mean avalanche size</text>
+</svg>
