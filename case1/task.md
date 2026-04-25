@@ -37,11 +37,15 @@ python case1/base/starter_simulation.py
 
 > 提示：所有图都是 matplotlib 的 SVG 输出，可直接在浏览器或编辑器中打开。
 
-参考实现拆分为两个可单独运行的脚本（位于 `case1/solution/`）：
+base 中的三份脚本（模型 / 起始仿真 / 绘图工具）有一份**逐段中文解读**：
+[`case1/base/README.md`](base/README.md)。开发前建议先通读。
+
+参考实现拆分为两个可单独运行的脚本（位于 `case1/solution/`），每个脚本
+都配有同名的中文解读文档：
 
 ```bash
-python case1/solution/phase1_solution.py
-python case1/solution/phase2_solution.py
+python case1/solution/phase1_solution.py   # 解读：solution/phase1_solution.md
+python case1/solution/phase2_solution.py   # 解读：solution/phase2_solution.md
 ```
 
 ---
@@ -93,8 +97,9 @@ python case1/solution/phase2_solution.py
    - `traffic_model.py`
    - `starter_simulation.py`
    - `plotting.py`
-3. `solution/phase1_solution.py`（阶段一参考实现，可单独运行）；
-4. `solution/phase2_solution.py`（阶段二参考实现，可单独运行）；
+   - `README.md`（base 脚本的中文详解）
+3. `solution/phase1_solution.py` + `solution/phase1_solution.md`（阶段一参考实现及其中文解读）；
+4. `solution/phase2_solution.py` + `solution/phase2_solution.md`（阶段二参考实现及其中文解读）；
 5. `figures/`（图表输出，至少包含）：
    - starter：`starter_density_timeseries.svg`、`starter_avalanche_distribution.svg`
    - phase1：`phase1_mean_size_vs_spill_prob.svg`、`phase1_size_dist_compare.svg`
