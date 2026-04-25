@@ -1,4 +1,19 @@
-"""Core traffic-overload cascade model used by starter and challenge solutions."""
+"""Core traffic-overload cascade model used by starter and challenge solutions.
+
+This module is part of the **base materials** handed to players. It models a
+2-D grid of intersections where:
+
+* every step a random intersection receives a new vehicle (slow drive);
+* once an intersection's load reaches ``threshold`` it topples — its load
+  drops by ``threshold`` and each of the four neighbours independently
+  receives a unit of pressure with probability ``spill_prob``;
+* each spill attempt may fail with probability ``dissipation`` to model
+  vehicles leaving the network entirely (energy loss).
+
+When ``adaptive=True`` the system tunes ``spill_prob`` toward ``target_load``
+via a simple proportional controller, which is the entry point for the
+self-organized-criticality experiments in phase 2.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +23,15 @@ import random
 
 @dataclass
 class TrafficParams:
-    L: int = 24
-    threshold: int = 6
-    spill_prob: float = 0.12
-    dissipation: float = 0.15
-    steps: int = 5000
-    warmup: int = 1000
+    L: int = 24                 # grid side length
+    threshold: int = 6          # load that triggers a topple
+    spill_prob: float = 0.12    # probability that a topple unit reaches each neighbour
+    dissipation: float = 0.15   # probability that a spill attempt is lost
+    steps: int = 5000           # total simulation steps (drive + relax)
+    warmup: int = 1000          # steps to discard before collecting statistics
     seed: int = 42
+
+    # --- Optional adaptive controller (phase 2) -----------------------------
     adaptive: bool = False
     target_load: float = 2.7
     adapt_rate: float = 0.015
@@ -31,7 +48,7 @@ class TrafficRunResult:
 
 
 class TrafficCascadeSystem:
-    """2D traffic pressure model with threshold-triggered local spillovers."""
+    """2-D traffic pressure model with threshold-triggered local spillovers."""
 
     def __init__(self, params: TrafficParams):
         self.params = params
@@ -39,7 +56,10 @@ class TrafficCascadeSystem:
         self.grid = [[0 for _ in range(params.L)] for _ in range(params.L)]
         self.spill_prob = params.spill_prob
 
-    def _clip(self, value: float, lo: float, hi: float) -> float:
+    # --- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _clip(value: float, lo: float, hi: float) -> float:
         return max(lo, min(hi, value))
 
     def _mean_load(self) -> float:
@@ -52,11 +72,23 @@ class TrafficCascadeSystem:
         self.grid[i][j] += 1
         return i, j
 
+    # --- main relaxation ----------------------------------------------------
+
     def _relax(self, seed_cell: tuple[int, int]) -> tuple[int, int]:
+        """Drain unstable cells until the grid is stable again.
+
+        Returns ``(size, duration)`` of the avalanche triggered from
+        ``seed_cell``. ``size`` counts every topple event (a single cell may
+        topple multiple times); ``duration`` is the number of synchronous
+        relaxation rounds.
+        """
         L = self.params.L
         threshold = self.params.threshold
 
-        frontier = {seed_cell} if self.grid[seed_cell[0]][seed_cell[1]] >= threshold else set()
+        if self.grid[seed_cell[0]][seed_cell[1]] < threshold:
+            return 0, 0
+
+        frontier = {seed_cell}
         size = 0
         duration = 0
 
@@ -82,10 +114,14 @@ class TrafficCascadeSystem:
                         if self.grid[nx][ny] >= threshold:
                             frontier.add((nx, ny))
 
+                # The just-toppled cell may itself still be unstable
+                # (e.g. when load was much higher than ``threshold``).
                 if self.grid[x][y] >= threshold:
                     frontier.add((x, y))
 
         return size, duration
+
+    # --- public driver ------------------------------------------------------
 
     def run(self) -> TrafficRunResult:
         p = self.params
@@ -96,7 +132,8 @@ class TrafficCascadeSystem:
 
         for t in range(p.steps):
             if p.adaptive:
-                # Feedback controller: if load rises too high, lower spill probability; if too low, raise it.
+                # Proportional feedback: high load -> lower spill probability;
+                # low load -> raise it. Clipped to a safe range.
                 err = p.target_load - self._mean_load()
                 self.spill_prob = self._clip(
                     self.spill_prob + p.adapt_rate * err,
