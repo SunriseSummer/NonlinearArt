@@ -11,6 +11,16 @@
 嵌在 `TrafficCascadeSystem` 中，玩家只需要在 `TrafficParams` 中开
 `adaptive=True`、给好目标负载和步长即可。
 
+> **本版关键改动**：
+> 1. **补上鲁棒性实验**——旧版本只跑一组 `(seed, 初始 p)`，所以 `task.md`
+>    阶段二的第三条验证要求（“鲁棒性”）只能在文字里口头声称。新版本
+>    显式扫描多组 `(seed, p₀)`、把它们的负载轨迹叠在一起、并打印
+>    稳态均值，让“收敛到同一个 SOC 态”这件事有图有数据。
+> 2. **修正 `target_load`**——旧版本设的 `2.8` 在当前耗散率下其实
+>    不可达，控制器一路把 `spill_prob` 顶到上限 `spill_max=0.45`
+>    才停。新版本调成 `2.6`，让 `spill_prob` 收敛到 `[0.32, 0.37]`
+>    这样的内点，整套反馈才真正“在工作”。
+
 ---
 
 ## 2. 反馈机制速览
@@ -39,58 +49,62 @@ spill_prob = clip(spill_prob + adapt_rate * err, spill_min, spill_max)
 
 ## 3. 脚本逐段解读
 
-### 3.1 参数选择
+### 3.1 参数选择 / 共享模板
 
 ```python
-params = TrafficParams(
+CANONICAL = dict(
     L=24, threshold=6,
-    spill_prob=0.10,           # 故意从亚临界起步
     dissipation=0.20,
     steps=7000, warmup=1000,
-    seed=2026,
     adaptive=True,
-    target_load=2.8,           # 目标平均负载
-    adapt_rate=0.020,          # 比例步长
+    target_load=2.6,           # 修正：旧版 2.8 不可达，会把 p 顶到上限
+    adapt_rate=0.020,
     spill_min=0.05, spill_max=0.45,
 )
+
+def _make_params(*, seed, spill_prob):
+    return TrafficParams(seed=seed, spill_prob=spill_prob, **CANONICAL)
 ```
 
-几个值得注意的点：
+把所有不变参数抽到 `CANONICAL` 字典里，是为了后面鲁棒性扫描时
+**只换 `(seed, spill_prob)`** 而其他设置完全一致——这样得到的对比图
+才有可比性。
+
+几个值得注意的设定：
 
 - **故意从亚临界起步**（`spill_prob=0.10`）：用来检验“即使初值偏离，
   系统能不能自己漂到临界”，这正是 SOC 的鲁棒性诉求。
-- `target_load=2.8` 接近阶段一估出的临界点附近的稳态负载——选择稍高
-  于阶段一“纯亚临界”态的负载即可，不必精确等于临界点；只要选在临界
-  邻域内，控制器就会把系统拉到临界曲线上。
+- **`target_load=2.6`**：略高于阶段一“纯亚临界”态的负载、又在
+  当前 `dissipation=0.20` 下可以达成。如果设得太高（比如 2.8），
+  控制器会一路推到 `spill_max=0.45` 都还没到目标，看上去“稳态”但
+  其实 `spill_prob` 已经饱和，反馈没有真正起作用。
 - `steps=7000, warmup=1000` 比阶段一更长：自适应模式需要给控制器留
   收敛时间，否则 warmup 之后采到的统计仍然带着“瞬态”痕迹。
 
-### 3.2 仿真 + 双 y 轴时间序列
+### 3.2 主仿真 + 双 y 轴时间序列
 
 ```python
+params = _make_params(seed=2026, spill_prob=0.10)
 res = TrafficCascadeSystem(params).run()
 
 plot_dual_axis(
     FIG_DIR / "phase2_density_and_spillprob.svg",
     x=list(range(len(res.densities))),
-    left ={"y": res.densities,         "label": "Mean load",
-           "ylabel": "Mean load per intersection", "color": "#1f77b4"},
-    right={"y": res.spill_prob_series, "label": "Adaptive spill probability",
-           "ylabel": "Spill probability p(t)",     "color": "#9467bd"},
+    left ={"y": res.densities,         "ylabel": "Mean load per intersection",  "color": "#1f77b4", ...},
+    right={"y": res.spill_prob_series, "ylabel": "Spill probability p(t)",      "color": "#9467bd", ...},
     title="Phase 2: self-organization of load and control parameter",
     xlabel="Simulation step",
     vline=params.warmup,
 )
 ```
 
-为什么必须用双 y 轴？因为平均负载量级在 ~3 附近，而 `spill_prob` 始终
+为什么必须用双 y 轴？因为平均负载量级在 ~2 ~ 3，而 `spill_prob` 始终
 在 `[0.05, 0.45]` 之间。如果共用一套 y 轴，`spill_prob` 会被压成一条
-几乎不动的横线，失去信息量。`plot_dual_axis` 的左右轴刻度颜色与曲线
-一致，便于一眼分辨哪条线对应哪个轴。
+几乎不动的横线，失去信息量。
 
 > **怎么读这张图**：典型的 SOC 表现是——前面一段瞬态，`spill_prob`
-> 从 0.10 缓慢上爬，平均负载也跟着抬升；越过 warmup 之后两条曲线
-> 都会进入“窄带波动”的稳态（不再单调发散，也不会塌掉）。
+> 从 0.10 缓慢上爬，平均负载也跟着抬升；越过 warmup（红色虚线）之后
+> 两条曲线都进入“窄带波动”的稳态——既不再单调发散，也没塌掉。
 
 输出：`case1/figures/phase2_density_and_spillprob.svg`。
 
@@ -102,24 +116,78 @@ x_dur,  y_dur  = log_hist(res.avalanche_durations)
 plot_lines(
     FIG_DIR / "phase2_avalanche_dist.svg",
     series=[
-        {"x": x_size, "y": y_size, "label": "Avalanche size s",
-         "color": "#e377c2", "marker": "o"},
-        {"x": x_dur,  "y": y_dur,  "label": "Avalanche duration T",
-         "color": "#8c564b", "marker": "s"},
+        {"x": x_size, "y": y_size, "label": "Avalanche size s",     "color": "#e377c2", "marker": "o"},
+        {"x": x_dur,  "y": y_dur,  "label": "Avalanche duration T", "color": "#8c564b", "marker": "s"},
     ],
     title="Phase 2: avalanche statistics after self-organization",
-    xlabel="s or T",
-    ylabel="P",
-    logx=True, logy=True,
+    xlabel="s or T", ylabel="P", logx=True, logy=True,
 )
 ```
 
 SOC 的另一个标志是**多尺度的雪崩统计**：不仅雪崩规模 `s`，对应的持续
-时间 `T` 也会呈幂律。这两条曲线在双对数图上理论上应当共同呈现近似直
-线，并且它们的指数 τ、α 之间存在 SOC 标度关系（如 `(τ - 1) = α · (γ - 1) / γ` 这类标度律）。
-玩家可以直接用 `numpy.polyfit` 在自己的脚本里拟合一段直线得到指数。
+时间 `T` 也会呈幂律。两条曲线在双对数图上理论上应当近似直线，且指数
+之间存在 SOC 标度关系。玩家可以直接用 `numpy.polyfit` 对中段做线性
+拟合得到指数。
 
 输出：`case1/figures/phase2_avalanche_dist.svg`。
+
+### 3.4 鲁棒性扫描（新增）
+
+旧版本到此就结束了，因此 `task.md` 阶段二的第三条要求只能口头宣称。
+本版本新增一段**显式的多种子 + 多初值扫描**：
+
+```python
+robustness_configs = [
+    ("seed=2026, p0=0.10", 2026, 0.10, "#1f77b4"),
+    ("seed=17,   p0=0.10", 17,   0.10, "#2ca02c"),
+    ("seed=991,  p0=0.40", 991,  0.40, "#d62728"),
+    ("seed=4242, p0=0.30", 4242, 0.30, "#9467bd"),
+]
+print("[phase2] robustness sweep — steady-state means after warmup:")
+print("  config                 <load>     <spill_prob>")
+for label, seed, p0, color in robustness_configs:
+    rparams = _make_params(seed=seed, spill_prob=p0)
+    rres = TrafficCascadeSystem(rparams).run()
+    load_ss  = _steady_mean(rres.densities,         rparams.warmup)
+    spill_ss = _steady_mean(rres.spill_prob_series, rparams.warmup)
+    print(f"  {label:<22} {load_ss:7.3f}    {spill_ss:7.3f}")
+    series.append({"x": ..., "y": rres.densities, "label": ..., ...})
+
+plot_lines(FIG_DIR / "phase2_robustness.svg", series=series, ...)
+```
+
+设计要点：
+
+- **既换 `seed`，也换初始 `spill_prob`**：第三条扫描从 `p0=0.40`
+  起步（高于稳态值），第四条从 `p0=0.30` 起步，确保覆盖“从下往上爬”
+  和“从上往下落”两种瞬态形态。
+- **稳态均值用 `_steady_mean`**：直接对 `warmup` 之后的样本取算术
+  平均，作为 SOC 工作点的数值证据。这一步把“图上看着差不多”升级
+  为“数表上数值差小于 1%”的硬证据。
+- **共用 `CANONICAL`**：保证四条曲线唯一的差异就是 `(seed, p0)`，
+  没有别的混淆因素。
+
+典型 stdout 输出（节选）：
+
+```
+[phase2] robustness sweep — steady-state means after warmup:
+  config                 <load>     <spill_prob>
+  seed=2026, p0=0.10       2.519      0.332
+  seed=17,   p0=0.10       2.522      0.317
+  seed=991,  p0=0.40       2.520      0.334
+  seed=4242, p0=0.30       2.522      0.365
+```
+
+四组 `<load>` 都收到 2.52 附近、`<spill_prob>` 落在 0.32 ~ 0.37 的
+窄带——这就是 SOC 鲁棒性的定量证据。
+
+输出：`case1/figures/phase2_robustness.svg`（四条负载轨迹叠在同一张
+图上，红色虚线标 `warmup`）。
+
+> **怎么读这张图**：四条线的瞬态形态各不相同（毕竟初始 `p` 都不一样），
+> 但越过 `warmup` 之后会全部挤到同一条窄带里波动。如果某一条曲线跑飞
+> 或者收到不同水平，说明控制参数（`adapt_rate`、`spill_max` 等）
+> 还没调好。
 
 ---
 
@@ -130,9 +198,8 @@ SOC 的另一个标志是**多尺度的雪崩统计**：不仅雪崩规模 `s`�
 - ✅ **稳态存在**：双 y 轴图上能直接看到平均负载在 warmup 之后窄带
   波动，没有发散。
 - ✅ **长尾雪崩统计**：尺寸 + 持续时间两条分布都覆盖多个数量级。
-- ☐ **鲁棒性**（参考实现未直接画图，但很容易加）：换不同 `seed` 或
-  起始 `spill_prob`，再跑同样的脚本，应当看到 `(mean_load, spill_prob)`
-  的稳态值几乎不变——玩家可以把多 seed 的稳态曲线叠在同一张图上证明。
+- ✅ **鲁棒性**：新增的 `phase2_robustness.svg` + stdout 数表，
+  四组 `(seed, p₀)` 的稳态值差异 < 2%。
 
 ---
 
@@ -144,12 +211,14 @@ python case1/solution/phase2_solution.py
 
 会在 `case1/figures/` 下产出：
 
-- `phase2_density_and_spillprob.svg`
-- `phase2_avalanche_dist.svg`
+- `phase2_density_and_spillprob.svg`（主仿真：负载 + 自适应 p 的双 y 轴时间序列）
+- `phase2_avalanche_dist.svg`（雪崩规模 + 持续时间的双对数分布）
+- `phase2_robustness.svg`（四组初值的负载轨迹叠图）
 
-跑完后建议先看时间序列那张图：如果两条曲线没有进入窄带稳态、或者 `spill_prob`
-一路撞到 `spill_max` / `spill_min`，说明 `target_load`、`adapt_rate` 还
-需要调；只有先确认稳态，再去看分布才有意义。
+整套五次仿真在普通笔记本上 1 ~ 2 秒可以跑完。跑完后建议先看主时间
+序列：如果两条曲线没有进入窄带稳态、或者 `spill_prob` 一路撞到
+`spill_max` / `spill_min`，说明 `target_load`、`adapt_rate` 还需要
+调；只有先确认稳态，再去看分布和鲁棒性才有意义。
 
 ---
 

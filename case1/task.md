@@ -86,6 +86,7 @@ python case1/solution/phase2_solution.py   # 解读：solution/phase2_solution.m
 参考产物：
 - `figures/phase2_density_and_spillprob.svg`（双 y 轴：负载 vs 自适应 p）
 - `figures/phase2_avalanche_dist.svg`
+- `figures/phase2_robustness.svg`（多 `(seed, 初始 p)` 的负载轨迹叠图）
 
 ---
 
@@ -103,7 +104,7 @@ python case1/solution/phase2_solution.py   # 解读：solution/phase2_solution.m
 5. `figures/`（图表输出，至少包含）：
    - starter：`starter_density_timeseries.svg`、`starter_avalanche_distribution.svg`
    - phase1：`phase1_mean_size_vs_spill_prob.svg`、`phase1_size_dist_compare.svg`
-   - phase2：`phase2_density_and_spillprob.svg`、`phase2_avalanche_dist.svg`
+   - phase2：`phase2_density_and_spillprob.svg`、`phase2_avalanche_dist.svg`、`phase2_robustness.svg`
 
 > 依赖：`matplotlib`（绘图）。其余仅依赖 Python 标准库。
 
