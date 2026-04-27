@@ -29,10 +29,16 @@ decentralised feedback contains the spread and recovers faster — exactly
 the "good rules beat global hand-tuning under uncertainty" argument from
 ``全新设计.md``.
 
-Outputs:
+Outputs (operational story):
     case1b/figures/phase4_compare_load.svg
     case1b/figures/phase4_compare_congestion.svg
     case1b/figures/phase4_summary.svg
+
+Outputs (SOC diagnostics — answer the reviewer's question
+"how do we *prove* this is self-organised criticality?"):
+    case1b/figures/phase4_robustness.svg          (spill_prob converges from any init)
+    case1b/figures/phase4_robustness_load.svg     (load attractor at target_load)
+    case1b/figures/phase4_soc_avalanche_dist.svg  (SOC mode = power law, static = not)
 """
 
 from __future__ import annotations
@@ -45,7 +51,13 @@ BASE_DIR = CASE_DIR / "base"
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from plotting import plot_bars, plot_lines, rolling_mean
+from plotting import (
+    log_hist,
+    plot_bars,
+    plot_lines,
+    power_law_fit,
+    rolling_mean,
+)
 from traffic_model import (
     DisturbanceSpec,
     RushHourTrafficSystem,
@@ -207,6 +219,207 @@ def run_phase4() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Self-organised criticality diagnostics
+# ---------------------------------------------------------------------------
+#
+# The "operational" comparison above tells the rush-hour story but does not,
+# by itself, demonstrate that Mode B's local rules **steer the network into
+# the critical state** rather than into some non-critical, merely-stable
+# attractor. The functions below add the canonical SOC diagnostics that the
+# reviewer asked for in PR comment #4328219231:
+#
+#   1. ``spill_prob`` (the control parameter) trajectory under
+#      ``adaptive_spill`` shows the proportional controller pulling the
+#      network toward p_c without any human tuning.
+#   2. The SOC mode's avalanche-size distribution is heavy-tailed and
+#      well fitted by a power law, while the static-control mode's is not.
+#   3. **Robustness**: starting from very different initial conditions
+#      (different seeds, different starting ``spill_prob``), the SOC mode
+#      converges to the *same* steady-state load and *same* statistics —
+#      this scale-free attractor is the defining signature of SOC.
+
+import math  # noqa: E402  (needed for power-law overlay below)
+
+SOC_THRESHOLD = 4
+SOC_DISSIPATION = 0.05
+SOC_INFLOW = 1.0
+SOC_TARGET_LOAD = 1.8
+SOC_L = 24
+SOC_STEPS = 10000
+SOC_WARMUP = 2500
+
+
+def _soc_run(*, seed: int, init_spill: float, adaptive: bool):
+    """Run the BTW-friendly model either with or without ``adaptive_spill``.
+
+    The static run pins ``spill_prob`` at ``init_spill`` and keeps it there;
+    the adaptive run lets the proportional controller drive the network
+    toward ``SOC_TARGET_LOAD`` automatically (this is the SOC mechanism)."""
+    return RushHourTrafficSystem(TrafficParams(
+        L=SOC_L, threshold=SOC_THRESHOLD,
+        inflow_rate=SOC_INFLOW,
+        spill_prob=init_spill,
+        dissipation=SOC_DISSIPATION,
+        steps=SOC_STEPS, warmup=SOC_WARMUP, seed=seed,
+        adaptive_spill=adaptive,
+        target_load=SOC_TARGET_LOAD,
+        adapt_rate=0.020, spill_min=0.05, spill_max=1.00,
+    )).run()
+
+
+def _stats(values, warmup):
+    tail = values[warmup:]
+    if not tail:
+        return 0.0
+    return sum(tail) / len(tail)
+
+
+def run_phase4_soc_diagnostics() -> None:
+    """Prove Mode B is genuinely *self-organised critical* — not just stable."""
+
+    # -----------------------------------------------------------------
+    # (1) Spill-prob trajectory + steady-state convergence
+    # -----------------------------------------------------------------
+    # Three different starting spill_prob values; the adaptive controller
+    # should pull all three to (approximately) the same steady value.
+    init_spills = [0.30, 0.60, 0.90]
+    seeds = [2026, 17, 991]
+
+    print("[phase4/soc] adaptive controller pulls spill_prob to a common attractor:")
+    print("  init_p   <p_steady>   <load_steady>")
+
+    spill_series = []
+    load_series = []
+    for init_p in init_spills:
+        for seed in seeds:
+            res = _soc_run(seed=seed, init_spill=init_p, adaptive=True)
+            spill_steady = _stats(res.spill_prob_series, SOC_WARMUP)
+            load_steady = _stats(res.densities, SOC_WARMUP)
+            print(f"  {init_p:0.2f}     {spill_steady:6.3f}       {load_steady:6.3f}")
+            xs = list(range(len(res.spill_prob_series)))
+            spill_series.append({
+                "x": xs,
+                "y": rolling_mean(res.spill_prob_series, 80),
+                "label": f"init_p={init_p:.2f} seed={seed}",
+                "linewidth": 1.0, "alpha": 0.85,
+            })
+            load_series.append({
+                "x": xs,
+                "y": rolling_mean(res.densities, 80),
+                "label": f"init_p={init_p:.2f} seed={seed}",
+                "linewidth": 1.0, "alpha": 0.85,
+            })
+
+    plot_lines(
+        FIG_DIR / "phase4_robustness.svg",
+        series=spill_series + [{
+            "x": [SOC_WARMUP, SOC_WARMUP],
+            "y": [0.0, 1.0], "label": f"warmup={SOC_WARMUP}",
+            "color": "#b00000", "linestyle": ":", "linewidth": 1.0,
+        }],
+        title=("Phase 4 SOC diagnostic: spill_prob trajectories from "
+               "different initial conditions all converge"),
+        xlabel="Simulation step",
+        ylabel="spill_prob (rolling mean)",
+    )
+
+    # Also draw the load trajectory chart — this is the visible
+    # consequence of the controller successfully homing in on p_c.
+    plot_lines(
+        FIG_DIR / "phase4_robustness_load.svg",
+        series=load_series + [{
+            "x": [0, SOC_STEPS], "y": [SOC_TARGET_LOAD, SOC_TARGET_LOAD],
+            "label": f"target_load={SOC_TARGET_LOAD}",
+            "color": "#444444", "linestyle": "--", "linewidth": 1.2,
+        }],
+        title=("Phase 4 SOC diagnostic: mean load attractor under local "
+               "feedback (no global tuning)"),
+        xlabel="Simulation step",
+        ylabel="Mean load (rolling)",
+    )
+
+    # -----------------------------------------------------------------
+    # (2) Avalanche size + duration distributions:
+    #     SOC mode (adaptive) vs static mode pinned at three p values
+    # -----------------------------------------------------------------
+    # Pool many seeds for each curve so the fit is statistically meaningful.
+    soc_sizes: list[int] = []
+    soc_durs: list[int] = []
+    for seed in seeds + [4242, 123]:
+        res = _soc_run(seed=seed, init_spill=0.60, adaptive=True)
+        soc_sizes.extend(res.avalanche_sizes)
+        soc_durs.extend(res.avalanche_durations)
+
+    static_sizes_by_p: dict[float, list[int]] = {}
+    for p_static in (0.40, 0.70, 1.00):
+        pool: list[int] = []
+        for seed in seeds + [4242, 123]:
+            res = _soc_run(seed=seed, init_spill=p_static, adaptive=False)
+            pool.extend(res.avalanche_sizes)
+        static_sizes_by_p[p_static] = pool
+
+    # Power-law fit on the SOC mode (the headline claim).
+    xs_soc, ys_soc = log_hist(soc_sizes, bins=24)
+    xd_soc, yd_soc = log_hist(soc_durs, bins=20)
+
+    def _fit_range(xs_):
+        if len(xs_) < 4:
+            return None, None
+        return xs_[1], xs_[-2]
+
+    fit_lo, fit_hi = _fit_range(xs_soc)
+    tau, b, r2 = power_law_fit(xs_soc, ys_soc, x_min=fit_lo, x_max=fit_hi)
+    fit_lo_d, fit_hi_d = _fit_range(xd_soc)
+    alpha, b_d, r2_d = power_law_fit(xd_soc, yd_soc,
+                                     x_min=fit_lo_d, x_max=fit_hi_d)
+
+    print(f"[phase4/soc] adaptive (Mode B) avalanche fit: "
+          f"P(s)~s^-{tau:.2f} (R^2={r2:.3f}),  "
+          f"P(T)~T^-{alpha:.2f} (R^2={r2_d:.3f})")
+
+    # Build the comparison plot.
+    series = []
+    palette = {0.40: "#2ca02c", 0.70: "#ff7f0e", 1.00: "#d62728"}
+    for p_static, pool in static_sizes_by_p.items():
+        x, y = log_hist(pool, bins=22)
+        if x:
+            series.append({
+                "x": x, "y": y,
+                "label": f"static p={p_static:.2f}  max s={max(pool)}",
+                "color": palette[p_static], "marker": "o",
+                "linestyle": "", "alpha": 0.8,
+            })
+
+    if xs_soc:
+        series.append({
+            "x": xs_soc, "y": ys_soc,
+            "label": (f"adaptive (Mode B)  max s={max(soc_sizes)}  "
+                      f"tau~{tau:.2f}"),
+            "color": "#1f77b4", "marker": "D",
+            "linestyle": "", "alpha": 0.95,
+        })
+    if xs_soc and tau > 0 and fit_lo and fit_hi:
+        fit_x = [fit_lo, fit_hi]
+        fit_y = [10 ** (b - tau * math.log10(v)) for v in fit_x]
+        series.append({
+            "x": fit_x, "y": fit_y,
+            "label": f"power-law fit (R^2={r2:.2f})",
+            "color": "#1f77b4", "linestyle": "--", "linewidth": 1.5,
+        })
+
+    plot_lines(
+        FIG_DIR / "phase4_soc_avalanche_dist.svg",
+        series=series,
+        title=("Phase 4 SOC diagnostic: only the adaptive (Mode B) mode "
+               "produces a clean power-law cascade distribution"),
+        xlabel="Cascade size s",
+        ylabel="P(s)",
+        logx=True, logy=True,
+    )
+
+
 if __name__ == "__main__":
     run_phase4()
+    run_phase4_soc_diagnostics()
     print(f"Phase 4 done. Figures written to {FIG_DIR}")

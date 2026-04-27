@@ -71,6 +71,60 @@ def log_hist(data: Iterable[int], bins: int = 32) -> tuple[list[float], list[flo
     return centers, probs
 
 
+def power_law_fit(
+    centers: Sequence[float],
+    probs: Sequence[float],
+    *,
+    x_min: float | None = None,
+    x_max: float | None = None,
+) -> tuple[float, float, float]:
+    """Fit ``log10(P) = -tau * log10(s) + b`` over the chosen range.
+
+    Returns ``(tau, b, r2)`` where ``tau`` is the power-law exponent
+    (positive number, so ``P(s) ~ s^(-tau)``), ``b`` is the intercept on
+    log10 scale, and ``r2`` is the coefficient of determination of the
+    log-log linear fit. Returns ``(0, 0, 0)`` if there are fewer than two
+    valid points in the requested range — callers should treat that as
+    "no fit available" and avoid drawing a line.
+
+    The fit deliberately runs in log space (least squares on
+    ``log10(centers)`` vs ``log10(probs)``) which is the standard textbook
+    approach for assessing whether an empirical distribution is consistent
+    with a power law over a chosen range.
+    """
+    xs, ys = [], []
+    for x, p in zip(centers, probs):
+        if x <= 0 or p <= 0:
+            continue
+        if x_min is not None and x < x_min:
+            continue
+        if x_max is not None and x > x_max:
+            continue
+        xs.append(math.log10(x))
+        ys.append(math.log10(p))
+
+    n = len(xs)
+    if n < 2:
+        return 0.0, 0.0, 0.0
+
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    if sxx <= 0:
+        return 0.0, 0.0, 0.0
+
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    syy = sum((y - my) ** 2 for y in ys)
+    if syy <= 0:
+        r2 = 1.0
+    else:
+        ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+        r2 = max(0.0, 1.0 - ss_res / syy)
+    return -slope, intercept, r2
+
+
 # --- Figure helpers ---------------------------------------------------------
 
 

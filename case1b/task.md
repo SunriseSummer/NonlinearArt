@@ -116,6 +116,13 @@ python case1b/solution/phase4_self_organization.py    # solution/phase4_self_org
 - `figures/phase2_demand_sweep.svg`
 - `figures/phase2_regime_compare.svg`
 - `figures/phase2_avalanche_dist.svg`
+- `figures/phase2_susceptibility.svg` — `χ(p)` 易感度峰值定 `p_c`
+- `figures/phase2_powerlaw_fit.svg` — 临界点处 `P(s)~s^(-τ)` 拟合 + R²
+- `figures/phase2_finite_size_scaling.svg` — `L=16/24/32` 截断随尺寸增长
+
+> 后三张是临界态的**严格诊断**：仅有"亚 / 临界 / 超"的运营对比不足以
+> 证明系统真的处于临界，必须同时给出（a）易感度峰值、（b）临界点处可
+> 拟合的幂律 + 高 R²、（c）finite-size scaling，才能下结论。
 
 ---
 
@@ -166,6 +173,13 @@ python case1b/solution/phase4_self_organization.py    # solution/phase4_self_org
 - `figures/phase4_compare_load.svg`
 - `figures/phase4_compare_congestion.svg`
 - `figures/phase4_summary.svg`
+- `figures/phase4_robustness.svg` — 9 组初值的 `spill_prob` 轨迹全部收敛
+- `figures/phase4_robustness_load.svg` — 同 9 组的 `<load>` 轨迹收敛到 `target_load`
+- `figures/phase4_soc_avalanche_dist.svg` — SOC 模式下的雪崩幂律 + 静态对照
+
+> 后三张是 SOC 的**严格诊断**：仅展示"事故下表现更好"不能证明 SOC，必须
+> 同时给出（a）多初值收敛到同一吸引子、（b）稳态雪崩幂律 + 高 R²、
+> （c）静态对照下分布显著不同，才能严格地说"这是自组织临界"。
 
 ---
 
