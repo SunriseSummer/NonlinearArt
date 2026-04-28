@@ -65,6 +65,7 @@ python case4/base/starter_simulation.py
 - `rolling_mean`：平滑热涨落；
 - `susceptibility(m, T, N)`：磁化涨落给出的磁化率 `χ`；
 - `heat_capacity(e, T, N)`：能量涨落给出的比热代理量 `C`；
+- `binder_cumulant(m)`：四阶 Binder cumulant，用不同尺寸曲线交叉严格定位临界区域；
 - `log_hist`：阶段四把“翻转雪崩/活动爆发”画成双对数分布。
 
 ---

@@ -10,7 +10,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from ising_model import IsingFilm, IsingParams
-from plotting import log_hist, plot_bars, plot_lines, rolling_mean
+from plotting import log_hist, plot_bars, plot_lines, rolling_mean, susceptibility
 
 CASE_DIR = BASE_DIR.parent
 FIG_DIR = CASE_DIR / "figures"
@@ -18,6 +18,7 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 INITIAL_TEMPS = [1.40, 3.20, 4.00]
 COLORS = ["#1f77b4", "#d62728", "#2ca02c"]
+CRITICAL_BAND = (2.20, 2.80)
 
 
 def run_adaptive(temp: float, seed: int):
@@ -43,6 +44,9 @@ def main() -> None:
     labels = []
     late_temps = []
     late_mags = []
+    critical_occupancy = []
+    adaptive_m: list[float] = []
+    adaptive_t: list[float] = []
     adaptive_activity: list[int] = []
 
     for idx, temp in enumerate(INITIAL_TEMPS):
@@ -55,6 +59,14 @@ def main() -> None:
         tail = slice(-400, None)
         late_temps.append(sum(result.temperature_series[tail]) / len(result.temperature_series[tail]))
         late_mags.append(sum(result.abs_magnetisation[tail]) / len(result.abs_magnetisation[tail]))
+        late_t = result.temperature_series[tail]
+        in_band = [
+            1.0 if CRITICAL_BAND[0] <= value <= CRITICAL_BAND[1] else 0.0
+            for value in late_t
+        ]
+        critical_occupancy.append(sum(in_band) / len(in_band))
+        adaptive_m.extend(result.magnetisation[params.warmup:])
+        adaptive_t.extend(result.temperature_series[params.warmup:])
         adaptive_activity.extend(result.accepted_flips[params.warmup:])
         print(f"{label}: late T={late_temps[-1]:.3f}, late |m|={late_mags[-1]:.3f}")
 
@@ -72,20 +84,33 @@ def main() -> None:
         title="Phase 4: order parameter is held near the target band",
         xlabel="Monte Carlo sweep",
         ylabel="rolling |m|",
-        hline=0.58,
+        hline=0.45,
     )
 
     # Static controls for activity distribution comparison.
     control_series = []
-    for label, temp, color in [("fixed cold", 1.60, "#9467bd"), ("fixed hot", 3.60, "#8c564b")]:
+    susceptibility_labels = []
+    susceptibility_values = []
+    for label, temp, color in [
+        ("fixed cold", 1.60, "#9467bd"),
+        ("fixed near-Tc", 2.50, "#7f7f7f"),
+        ("fixed hot", 3.60, "#8c564b"),
+    ]:
         params = IsingParams(L=12, temperature=temp, sweeps=1400, warmup=400, seed=4700 + int(temp * 10))
         result = IsingFilm(params).run()
         xs, ys = log_hist(result.accepted_flips[params.warmup:])
         if xs:
             control_series.append({"x": xs, "y": ys, "label": label, "color": color, "marker": "o"})
+        susceptibility_labels.append(label)
+        susceptibility_values.append(
+            susceptibility(result.magnetisation[params.warmup:], temp, params.L * params.L)
+        )
     xs, ys = log_hist(adaptive_activity)
     if xs:
         control_series.append({"x": xs, "y": ys, "label": "adaptive near edge", "color": "#d62728", "marker": "s"})
+    susceptibility_labels.append("adaptive")
+    mean_adaptive_t = sum(adaptive_t) / len(adaptive_t)
+    susceptibility_values.append(susceptibility(adaptive_m, mean_adaptive_t, 12 * 12))
     plot_lines(
         FIG_DIR / "phase4_activity_distribution.svg",
         series=control_series,
@@ -94,6 +119,22 @@ def main() -> None:
         ylabel="probability density",
         logx=True,
         logy=True,
+    )
+    plot_bars(
+        FIG_DIR / "phase4_critical_occupancy.svg",
+        labels,
+        critical_occupancy,
+        "Phase 4: late-time occupancy of the finite-size critical band",
+        f"fraction of last 400 sweeps in T∈[{CRITICAL_BAND[0]:.1f},{CRITICAL_BAND[1]:.1f}]",
+        colors=COLORS,
+    )
+    plot_bars(
+        FIG_DIR / "phase4_susceptibility_compare.svg",
+        susceptibility_labels,
+        susceptibility_values,
+        "Phase 4: adaptive state keeps high susceptibility versus static controls",
+        "chi from late-time magnetisation fluctuations",
+        colors=["#9467bd", "#7f7f7f", "#8c564b", "#d62728"],
     )
     plot_bars(
         FIG_DIR / "phase4_summary.svg",

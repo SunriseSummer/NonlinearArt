@@ -47,6 +47,22 @@ def heat_capacity(e_values: Sequence[float], temperature: float, n_spins: int) -
     return n_spins * variance(e_values) / max(temperature * temperature, 1e-9)
 
 
+def binder_cumulant(m_values: Sequence[float]) -> float:
+    """Fourth-order Binder cumulant for the Ising magnetisation.
+
+    Curves for different system sizes cross near the critical temperature,
+    making this a stricter finite-size diagnostic than a single susceptibility
+    peak.
+    """
+    if not m_values:
+        return 0.0
+    m2 = mean([m * m for m in m_values])
+    if m2 <= 0.0:
+        return 0.0
+    m4 = mean([m ** 4 for m in m_values])
+    return 1.0 - m4 / (3.0 * m2 * m2)
+
+
 def log_hist(data: Iterable[int], bins: int = 28) -> tuple[list[float], list[float]]:
     values = [int(v) for v in data if v > 0]
     if len(values) < 2 or min(values) == max(values):

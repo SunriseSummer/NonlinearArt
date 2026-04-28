@@ -95,8 +95,9 @@ python case4/solution/phase4_self_organization.py
 - 平均 `|m|`；
 - 磁化率 `χ = N·Var(m)/T`；
 - 比热代理量 `C = N·Var(E/N)/T²`。
+- Binder cumulant `U₄ = 1 - ⟨m⁴⟩/(3⟨m²⟩²)`。
 
-然后用至少两种系统尺寸 `L` 做有限尺寸对照：有限系统中 `χ` 峰值会被截断，并随 `L` 变化向 `T_c≈2.269` 附近靠近。
+然后用至少两种系统尺寸 `L` 做有限尺寸对照：有限系统中 `χ` 峰值会被截断，并随 `L` 变化向 `T_c≈2.269` 附近靠近；不同 `L` 的 Binder cumulant 曲线应在临界区域附近交叉，这是比单条峰值更严格的临界诊断。
 
 #### 阶段二验证要求（至少完成 2 项）
 
@@ -104,12 +105,14 @@ python case4/solution/phase4_self_organization.py
 2. **磁化率峰值**：`χ(T)` 在 `T≈2.269` 附近出现明显峰。
 3. **有限尺寸效应**：至少比较 `L=16` 与 `L=24`（或更大），说明峰值位置 / 高度随尺寸变化。
 4. **比热辅助证据**：`C(T)` 在相同区域增强。
+5. **Binder 交叉**：不同尺寸的 `U₄(T)` 曲线在 `T_c` 附近形成交叉/汇聚区。
 
 参考产物：
 
 - `figures/phase2_temperature_sweep.svg`
 - `figures/phase2_susceptibility.svg`
 - `figures/phase2_finite_size.svg`
+- `figures/phase2_binder_cumulant.svg`
 
 ---
 
@@ -162,14 +165,18 @@ adaptive_temperature=True
 
 1. **多初值收敛**：多条 `T(t)` 轨迹最终落入 `T_c` 附近同一窗口。
 2. **稳态质量**：late-time `|m|` 接近目标值且不过度振荡。
-3. **活动长尾**：反馈态的接受翻转数分布比固定低温 / 高温更宽、更长尾。
-4. **扰动韧性**：在反馈态下重复阶段三的弱脉冲，响应大但不长期锁死。
+3. **临界窗口占据率**：统计 late-time 有多少比例停留在阶段二识别出的有限尺寸临界窗口内。
+4. **高易感性对照**：反馈态的 `χ` 应显著高于固定低温 / 高温对照，并接近固定临界温度对照。
+5. **活动长尾**：反馈态的接受翻转数分布比固定低温 / 高温更宽、更长尾。
+6. **扰动韧性**：在反馈态下重复阶段三的弱脉冲，响应大但不长期锁死。
 
 参考产物：
 
 - `figures/phase4_temperature_convergence.svg`
 - `figures/phase4_magnetisation_convergence.svg`
 - `figures/phase4_activity_distribution.svg`
+- `figures/phase4_critical_occupancy.svg`
+- `figures/phase4_susceptibility_compare.svg`
 - `figures/phase4_summary.svg`
 
 > 注意：这里的“自组织临界”是教学版反馈机制，不等同于严格无限系统 SOC 证明。若要严格下结论，必须进一步给出多尺寸标度、长时间稳态分布与对照模型检验。
