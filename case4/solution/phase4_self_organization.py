@@ -22,14 +22,14 @@ COLORS = ["#1f77b4", "#d62728", "#2ca02c"]
 
 def run_adaptive(temp: float, seed: int):
     params = IsingParams(
-        L=28,
+        L=12,
         temperature=temp,
-        sweeps=1800,
+        sweeps=2500,
         warmup=500,
         seed=seed,
         adaptive_temperature=True,
-        target_abs_m=0.58,
-        temp_gain=0.10,
+        target_abs_m=0.45,
+        temp_gain=0.06,
         feedback_window=35,
         temp_min=1.3,
         temp_max=4.2,
@@ -78,7 +78,7 @@ def main() -> None:
     # Static controls for activity distribution comparison.
     control_series = []
     for label, temp, color in [("fixed cold", 1.60, "#9467bd"), ("fixed hot", 3.60, "#8c564b")]:
-        params = IsingParams(L=28, temperature=temp, sweeps=1400, warmup=400, seed=4700 + int(temp * 10))
+        params = IsingParams(L=12, temperature=temp, sweeps=1400, warmup=400, seed=4700 + int(temp * 10))
         result = IsingFilm(params).run()
         xs, ys = log_hist(result.accepted_flips[params.warmup:])
         if xs:

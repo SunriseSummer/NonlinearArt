@@ -59,7 +59,12 @@ def main() -> None:
         base_window = result.magnetisation[PULSE.start - 120:PULSE.start]
         pulse_window = result.magnetisation[PULSE.start:PULSE.start + PULSE.duration]
         baseline = sum(base_window) / len(base_window)
-        delta = max(abs(v - baseline) for v in pulse_window)
+        pulse_mean = sum(pulse_window) / len(pulse_window)
+        # Use the mean pulse displacement for the summary bar.  The raw maximum
+        # is intentionally left visible in the time series, but in a hot
+        # paramagnet a single noisy excursion can otherwise masquerade as
+        # genuine amplification.
+        delta = abs(pulse_mean - baseline)
         labels.append(label)
         response.append(delta)
         recovery.append(recovery_time(smoothed_m, abs(baseline), delta, PULSE.start + PULSE.duration))

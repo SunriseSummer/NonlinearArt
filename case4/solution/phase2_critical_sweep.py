@@ -21,7 +21,14 @@ SIZES = [16, 24, 32]
 
 
 def run_point(L: int, temp: float, seed: int) -> tuple[float, float, float]:
-    params = IsingParams(L=L, temperature=temp, sweeps=1100, warmup=350, seed=seed)
+    params = IsingParams(
+        L=L,
+        temperature=temp,
+        sweeps=1100,
+        warmup=350,
+        seed=seed,
+        initial_state="up",
+    )
     result = IsingFilm(params).run()
     tail = slice(params.warmup, None)
     m_tail = result.magnetisation[tail]
