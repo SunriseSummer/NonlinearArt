@@ -58,6 +58,8 @@ def binder_cumulant(m_values: Sequence[float]) -> float:
         return 0.0
     m2 = mean([m * m for m in m_values])
     if m2 <= 0.0:
+        # U4 is undefined for a perfectly zero-variance magnetisation sample
+        # (0/0 in the fourth-moment ratio), so return a neutral finite sentinel.
         return 0.0
     m4 = mean([m ** 4 for m in m_values])
     return 1.0 - m4 / (3.0 * m2 * m2)

@@ -18,6 +18,9 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 INITIAL_TEMPS = [1.40, 3.20, 4.00]
 COLORS = ["#1f77b4", "#d62728", "#2ca02c"]
+# L=12 has a broad finite-size critical region rather than a sharp singular
+# point.  Phase 2's finite-size sweep places the useful high-fluctuation band
+# around this interval, so phase 4 measures how often feedback stays inside it.
 CRITICAL_BAND = (2.20, 2.80)
 
 
@@ -29,6 +32,8 @@ def run_adaptive(temp: float, seed: int):
         warmup=500,
         seed=seed,
         adaptive_temperature=True,
+        # For L=12, |m|≈0.45 keeps the controller in the finite-size critical
+        # band instead of locking the small lattice into a fully ordered state.
         target_abs_m=0.45,
         temp_gain=0.06,
         feedback_window=35,
