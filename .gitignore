@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Cached MNIST data files for SOC-AI-2 (downloaded automatically on first run)
+SOC-AI-2/data/*.gz
