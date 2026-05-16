@@ -1,4 +1,12 @@
-"""MNIST data loader for the SOC-AI-2 study.
+"""Fashion-MNIST data loader for the SOC-AI-2 study.
+
+Following the limitation noted in ``result.md`` §6 — that plain MNIST is too
+easy to widen the gap between critical and non-critical regimes — the
+benchmark has been upgraded to **Fashion-MNIST** (Xiao et al. 2017).  The
+file format, image geometry (28×28 grayscale), training/test split sizes
+(60 000 / 10 000) and number of classes (10) are byte-compatible with
+MNIST, so the model and criticality probes need no change; only the data
+source URL differs.
 
 We deliberately avoid a torchvision dependency at runtime: the four
 idx-format files are fetched from a GitHub-hosted mirror on first use and
@@ -7,7 +15,9 @@ only, so the script is self-contained and reproducible inside the sandbox.
 
 The 60 000 training and 10 000 test images are returned as float tensors
 normalised to ``[0, 1]`` and flattened to 784-dim vectors, plus integer
-class labels in {0, ..., 9}.
+class labels in {0, ..., 9}.  Classes correspond to: 0 T-shirt/top,
+1 Trouser, 2 Pullover, 3 Dress, 4 Coat, 5 Sandal, 6 Shirt, 7 Sneaker,
+8 Bag, 9 Ankle boot.
 """
 
 from __future__ import annotations
@@ -25,13 +35,20 @@ HERE = Path(__file__).parent
 DATA_DIR = HERE / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Public GitHub mirror with the four canonical idx files
-MIRROR = "https://github.com/golbin/TensorFlow-MNIST/raw/master/mnist/data"
+# Public GitHub mirror with the four canonical idx files (Fashion-MNIST,
+# Zalando Research).  File names are identical to the original MNIST.
+MIRROR = "https://github.com/zalandoresearch/fashion-mnist/raw/master/data/fashion"
 FILES = (
     "train-images-idx3-ubyte.gz",
     "train-labels-idx1-ubyte.gz",
     "t10k-images-idx3-ubyte.gz",
     "t10k-labels-idx1-ubyte.gz",
+)
+
+# Human-readable label names for Fashion-MNIST.
+CLASS_NAMES = (
+    "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
+    "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot",
 )
 
 
@@ -49,7 +66,7 @@ def _ensure_files() -> None:
         if path.exists() and path.stat().st_size > 0:
             continue
         url = f"{MIRROR}/{fname}"
-        print(f"[mnist] fetching {url}")
+        print(f"[fashion-mnist] fetching {url}")
         with urllib.request.urlopen(url, timeout=60) as r, open(path, "wb") as f:
             f.write(r.read())
 

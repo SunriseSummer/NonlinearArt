@@ -4,10 +4,17 @@
 > 结果解释提供概念基础。文档面向具备本科机器学习与统计物理基础的读者。
 >
 > SOC-AI-2 与 SOC-AI 共享同一份待检验假说，但把网络架构从 Transformer 换成
-> **经典多层前馈神经网络（MLP）**，数据集从合成 Markov 语言换成 **MNIST 手写
-> 数字识别**。这样做的目的，是把假说放在它的**理论原产地**——非残差、非归
-> 一化的深层网络——上检验：在该最有利的"标准舞台"上，经典 SOC 阈值能否
-> 同时给出"临界态"判读与"最佳学习效率"。
+> **经典多层前馈神经网络（MLP）**，数据集从合成 Markov 语言换成
+> **Fashion-MNIST 服饰图像识别**（28×28 灰度图、10 类）。这样做的目的，
+> 是把假说放在它的**理论原产地**——非残差、非归一化的深层网络——上检
+> 验：在该最有利的"标准舞台"上，经典 SOC 阈值能否同时给出"临界态"判读
+> 与"最佳学习效率"。
+>
+> 早期版本曾使用 MNIST 手写数字识别作为基准；但 MNIST 过于简单，
+> $\sigma\!\in\![0.7,\,1.3]$ 全域都能达到 ~95% 准确率，临界态与非临界态的
+> 差距被压缩到仅 4 个百分点。改用 Fashion-MNIST 后，最优区间与两端的
+> 差距放大到约 18–19 个百分点，更清晰地暴露出"临界 ↔ 最优"的对应关系
+> （详见 `result.md` §2）。
 
 ---
 
@@ -71,7 +78,7 @@ $$
 
 | 超参 | 取值 |
 | --- | --- |
-| 输入维度 | 784（MNIST 28×28 展平） |
+| 输入维度 | 784（Fashion-MNIST 28×28 展平） |
 | 类别数 | 10 |
 | 隐藏宽度 $W$ | 128 |
 | 隐藏层数 $L$ | 12 |
@@ -116,7 +123,8 @@ $$
 
 ## 5. 学习效率的度量
 
-MNIST 是分类任务，提供**两个互补的学习效率指标**：
+MNIST 是分类任务，提供**两个互补的学习效率指标**（Fashion-MNIST 与 MNIST 在
+类别数、样本数、像素归一化上完全一致，因此下述定义与上界对两者完全相同）：
 
 - **测试交叉熵** $\mathcal{L}_{\text{test}}$（nats/sample）。下界为零（确
   定性正确预测），均匀分类的上界为 $\log 10\approx 2.303$ nats。
@@ -139,7 +147,7 @@ SOC-AI-2 和 SOC-AI 构成一对**控制实验**：
 | --- | --- | --- |
 | 架构 | 残差 + LayerNorm Transformer | 非残差、无归一化 ReLU MLP |
 | 控制旋钮 | 前向信号放大 $g$ | 权重初始化增益 $\sigma$ |
-| 数据 | 二阶 Markov 合成语言 | MNIST 手写数字 |
+| 数据 | 二阶 Markov 合成语言 | Fashion-MNIST 服饰图像 |
 | 经典 SOC 阈值应该适用？ | ❌ | ✅ |
 
 如果"临界 ↔ 最佳学习效率"是个**普适规律**，则两个实验都应给出
@@ -153,7 +161,7 @@ SOC-AI-2 和 SOC-AI 构成一对**控制实验**：
 | 文件 | 作用 |
 | --- | --- |
 | `model.py`        | 深层 ReLU MLP，公开 `init_gain` 控制旋钮 |
-| `data.py`         | MNIST 加载器（从 GitHub 镜像下载 idx 文件并解析） |
+| `data.py`         | Fashion-MNIST 加载器（从 GitHub 镜像下载 idx 文件并解析） |
 | `criticality.py`  | 四项临界性诊断指标 |
 | `experiment.py`   | $\sigma$ 扫描主程序，输出 `results.json` 与 `figures/*.svg` |
 | `result.md`       | 实验结果、图表与结论 |
@@ -167,8 +175,8 @@ python data.py          # 触发首次下载并打印 shape 校验
 python experiment.py    # 完整扫描，约 1 min（2 核 CPU）
 ```
 
-依赖：`torch`、`numpy`、`matplotlib`（不要求 `torchvision`，MNIST 由
-`data.py` 内置的下载器和 idx 解析器处理）。
+依赖：`torch`、`numpy`、`matplotlib`（不要求 `torchvision`，Fashion-MNIST
+由 `data.py` 内置的下载器和 idx 解析器处理）。
 
 ---
 
@@ -178,6 +186,7 @@ python experiment.py    # 完整扫描，约 1 min（2 核 CPU）
 - Beggs J. M. & Plenz D. (2003). *Neuronal Avalanches in Neocortical Circuits*. **J. Neurosci.** 23: 11167-11177.
 - Bertschinger N. & Natschläger T. (2004). *Real-Time Computation at the Edge of Chaos in Recurrent Neural Networks*. **Neural Computation** 16(7): 1413-1436.
 - He K., Zhang X., Ren S., Sun J. (2015). *Delving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet Classification*. **ICCV**.
-- LeCun Y., Bottou L., Bengio Y., Haffner P. (1998). *Gradient-Based Learning Applied to Document Recognition*. **Proc. IEEE** 86(11): 2278-2324.
+- LeCun Y., Bottou L., Bengio Y., Haffner P. (1998). *Gradient-Based Learning Applied to Document Recognition*. **Proc. IEEE** 86(11): 2278-2324. *(原始 MNIST 来源；本研究的早期版本使用此数据集。)*
+- Xiao H., Rasul K., Vollgraf R. (2017). *Fashion-MNIST: a Novel Image Dataset for Benchmarking Machine Learning Algorithms*. **arXiv:1708.07747**. *(本研究当前所用数据集。)*
 - Poole B., Lahiri S., Raghu M., Sohl-Dickstein J., Ganguli S. (2016). *Exponential expressivity in deep neural networks through transient chaos*. **NeurIPS**.
 - Schoenholz S. S., Gilmer J., Ganguli S., Sohl-Dickstein J. (2017). *Deep Information Propagation*. **ICLR**.
