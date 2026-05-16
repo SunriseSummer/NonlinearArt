@@ -1,7 +1,7 @@
 """SOC-AI-2 main experiment.
 
 Sweep the weight-init gain σ ∈ [0.3 … 2.5] for a deep ReLU MLP trained on
-MNIST classification.  At each σ we:
+Fashion-MNIST classification.  At each σ we:
 
 1. build a fresh model;
 2. compute four criticality indicators on a frozen batch of test images
@@ -138,7 +138,7 @@ def main():
     t0 = time.time()
     corpus = MNIST(MNISTConfig())
     H_uniform = math.log(corpus.num_classes)
-    print(f"[corpus] MNIST {corpus.train_x.shape[0]} train / "
+    print(f"[corpus] Fashion-MNIST {corpus.train_x.shape[0]} train / "
           f"{corpus.test_x.shape[0]} test")
     print(f"[corpus] uniform NLL = {H_uniform:.4f} nats/sample "
           f"(accuracy 1/10 = 10%)")
@@ -266,7 +266,7 @@ def main():
                label=f"empirical loss-min σ = {s[critical_idx]:.2f}")
     ax.set_xlabel("initialisation gain  σ  (control parameter)")
     ax.set_ylabel("final test NLL (nats / sample)")
-    ax.set_title("Learning efficiency vs control parameter σ (MNIST, deep MLP)")
+    ax.set_title("Learning efficiency vs control parameter σ (Fashion-MNIST, deep MLP)")
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     fig.tight_layout()
