@@ -13,6 +13,8 @@ class CriticalityReport:
     branching_ratio: float
     lyapunov: float
     eff_rank: float
+    power_law_tau: float
+    power_law_r2: float
 
 
 @torch.no_grad()
@@ -62,10 +64,58 @@ def effective_rank(activations: list[torch.Tensor]) -> float:
 
 
 @torch.no_grad()
+def avalanche_sizes(activations: list[torch.Tensor], threshold_z: float = 1.0
+                    ) -> np.ndarray:
+    sizes = []
+    for h in activations[1:]:
+        std = h.std().item() + 1e-12
+        active = (h.abs() > threshold_z * std).float()
+        s = active.sum(dim=-1).reshape(-1).cpu().numpy()
+        sizes.append(s)
+    sizes = np.concatenate(sizes)
+    return sizes[sizes >= 1]
+
+
+@torch.no_grad()
+def avalanche_powerlaw(activations: list[torch.Tensor], threshold_z: float = 1.0
+                       ) -> tuple[float, float]:
+    sizes = avalanche_sizes(activations, threshold_z=threshold_z)
+    if sizes.size < 20:
+        return float("nan"), float("nan")
+    s_max = sizes.max()
+    bins = np.unique(np.round(np.logspace(0, np.log10(max(s_max, 2)), 18)
+                              ).astype(int))
+    if bins.size < 4:
+        return float("nan"), float("nan")
+    counts, edges = np.histogram(sizes, bins=bins)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    widths = np.diff(edges)
+    mask = counts > 0
+    if mask.sum() < 4:
+        return float("nan"), float("nan")
+    x = np.log(centers[mask])
+    y = np.log(counts[mask] / widths[mask])
+    A = np.vstack([x, np.ones_like(x)]).T
+    slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
+    y_hat = slope * x + intercept
+    ss_res = np.sum((y - y_hat) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2) + 1e-12
+    r2 = 1.0 - ss_res / ss_tot
+    return float(abs(slope)), float(max(0.0, r2))
+
+
+@torch.no_grad()
 def measure(model: DeepMLP, x: torch.Tensor) -> CriticalityReport:
     model.eval()
     _, acts = model(x, return_activations=True)
     br = branching_ratio(acts)
     lam = lyapunov_exponent(model, x)
     er = effective_rank(acts)
-    return CriticalityReport(branching_ratio=br, lyapunov=lam, eff_rank=er)
+    tau, r2 = avalanche_powerlaw(acts)
+    return CriticalityReport(
+        branching_ratio=br,
+        lyapunov=lam,
+        eff_rank=er,
+        power_law_tau=tau,
+        power_law_r2=r2,
+    )

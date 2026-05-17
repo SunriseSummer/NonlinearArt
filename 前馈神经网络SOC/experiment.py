@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from criticality import measure
+from criticality import avalanche_powerlaw, avalanche_sizes, measure
 from data import MNIST, MNISTConfig
 from model import DeepMLP, ModelConfig
 
@@ -81,7 +81,8 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
 
     history = {
         "step": [], "loss": [], "acc": [], "branching_ratio": [],
-        "lyapunov": [], "eff_rank": [], "mean_gain": [],
+        "lyapunov": [], "eff_rank": [], "power_law_tau": [], "power_law_r2": [],
+        "mean_gain": [],
         "layer_gains": [],
     }
 
@@ -116,6 +117,8 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
             history["branching_ratio"].append(rpt.branching_ratio)
             history["lyapunov"].append(rpt.lyapunov)
             history["eff_rank"].append(rpt.eff_rank)
+            history["power_law_tau"].append(rpt.power_law_tau)
+            history["power_law_r2"].append(rpt.power_law_r2)
             mg = float(model.adaptive_gains.mean().item())
             history["mean_gain"].append(mg)
             history["layer_gains"].append([float(v.item()) for v in model.adaptive_gains])
@@ -123,6 +126,10 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
     final_loss, final_acc = evaluate(model, corpus, eval_rng)
     reached = [s for s, a in zip(history["step"], history["acc"]) if a >= TARGET_ACC]
     time_to_target = reached[0] if reached else TRAIN_STEPS + 1
+    with torch.no_grad():
+        _, final_acts = model(probe_x, return_activations=True)
+    final_sizes = avalanche_sizes(final_acts).astype(float).tolist()
+    final_tau, final_r2 = avalanche_powerlaw(final_acts)
 
     result = {
         "seed": seed,
@@ -131,6 +138,9 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
         "final_acc": final_acc,
         "final_branching_ratio": history["branching_ratio"][-1],
         "final_lyapunov": history["lyapunov"][-1],
+        "final_tau": final_tau,
+        "final_powerlaw_r2": final_r2,
+        "final_avalanche_sizes": final_sizes,
         "time_to_target_acc": time_to_target,
         "reached_target": bool(reached),
         "history": history,
@@ -175,6 +185,8 @@ def main():
         m_acc, s_acc = mean_std([r["final_acc"] for r in runs])
         m_br, s_br = mean_std([r["final_branching_ratio"] for r in runs])
         m_lam, s_lam = mean_std([r["final_lyapunov"] for r in runs])
+        m_tau, s_tau = mean_std([r["final_tau"] for r in runs])
+        m_r2, s_r2 = mean_std([r["final_powerlaw_r2"] for r in runs])
         ttt = [r["time_to_target_acc"] for r in runs]
         m_ttt, s_ttt = mean_std(ttt)
         reached_rate = float(np.mean([r["reached_target"] for r in runs]))
@@ -188,6 +200,10 @@ def main():
             "final_branching_std": s_br,
             "final_lyapunov_mean": m_lam,
             "final_lyapunov_std": s_lam,
+            "final_tau_mean": m_tau,
+            "final_tau_std": s_tau,
+            "final_powerlaw_r2_mean": m_r2,
+            "final_powerlaw_r2_std": s_r2,
             "time_to_target_mean": m_ttt,
             "time_to_target_std": s_ttt,
             "target_reach_rate": reached_rate,
@@ -332,6 +348,33 @@ def main():
     ax.legend()
     fig.tight_layout()
     fig.savefig(FIG / "08_phase_plane.svg")
+    plt.close(fig)
+
+    # Figure 9 avalanche distributions and power-law fits
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.5), sharey=True)
+    for ax, regime in zip(axes.flat, REGIMES.keys()):
+        sample = by_regime[regime][0]
+        sizes = np.array(sample["final_avalanche_sizes"], dtype=float)
+        s_max = max(int(sizes.max()), 2)
+        bins = np.unique(np.round(np.logspace(0, np.log10(s_max), 18)).astype(int))
+        counts, edges = np.histogram(sizes, bins=bins)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        widths = np.diff(edges)
+        mask = counts > 0
+        ax.loglog(centers[mask], counts[mask] / widths[mask], "o", color=colors[regime])
+        tau, r2 = sample["final_tau"], sample["final_powerlaw_r2"]
+        if mask.sum() >= 2 and np.isfinite(tau):
+            xs = np.array([centers[mask].min(), centers[mask].max()])
+            ys = (counts[mask] / widths[mask])[0] * (xs / xs[0]) ** (-tau)
+            ax.loglog(xs, ys, "--", color="#111111", lw=1.2)
+        ax.set_title(f"{regime}: τ={tau:.2f}, R²={r2:.2f}")
+        ax.set_xlabel("avalanche size s")
+        ax.grid(alpha=0.3, which="both")
+    axes[0, 0].set_ylabel("density P(s)")
+    axes[1, 0].set_ylabel("density P(s)")
+    fig.suptitle("Avalanche power-law evidence across regimes", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(FIG / "09_avalanche_powerlaw.svg")
     plt.close(fig)
 
     out = {
