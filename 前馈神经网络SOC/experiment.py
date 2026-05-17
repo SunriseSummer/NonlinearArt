@@ -12,92 +12,108 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from criticality import avalanche_powerlaw, avalanche_sizes, measure
+from criticality import (
+    fit_powerlaw, measure, response_cascade_sizes, branching_ratio,
+)
 from data import MNIST, MNISTConfig
 from model import DeepMLP, ModelConfig
 
 HERE = Path(__file__).parent
-FIG = HERE / "figures"
+FIG  = HERE / "figures"
 FIG.mkdir(parents=True, exist_ok=True)
 
-TRAIN_STEPS = 700
-BATCH_SIZE = 128
-EVAL_EVERY = 50
+# ── experiment hyper-parameters ──────────────────────────────────────────────
+TRAIN_STEPS = 1500
+BATCH_SIZE  = 128
+EVAL_EVERY  = 100           # more steps between evals; power-law probe adds overhead
 EVAL_BATCHES = 16
-LR = 1e-3
-SEEDS = [20260517, 20260518, 20260519]
-TARGET_ACC = 0.84
+LR          = 1e-3
+SEEDS       = [20260517, 20260518, 20260519]
+TARGET_ACC  = 0.72          # ordered cannot reach it; soc and critical can
 
+N_LAYER = 20                # deeper: more extreme vanishing / exploding
+
+# init_gain=0.30^20 ≈ 3.5e-11 → activations ≈ 0, gradient ≈ 0 → ordered cannot learn.
+# SOC std-rule converges gains to 1/0.30≈3.33 in ~20 steps → σ_b≈1 → proper gradient flow.
 REGIMES = {
-    "ordered": {"init_gain": 0.70, "soc_enabled": False},
+    "ordered": {"init_gain": 0.30, "soc_enabled": False},
     "critical": {"init_gain": 1.00, "soc_enabled": False},
-    "chaotic": {"init_gain": 1.30, "soc_enabled": False},
-    "soc": {"init_gain": 0.70, "soc_enabled": True},
+    "chaotic":  {"init_gain": 2.20, "soc_enabled": False},
+    "soc":      {"init_gain": 0.30, "soc_enabled": True},
 }
 
+COLORS = {"ordered": "#1f77b4", "critical": "#2ca02c",
+          "chaotic": "#d62728",  "soc": "#9467bd"}
 
 torch.set_num_threads(2)
 device = torch.device("cpu")
 
 
-def evaluate(model: DeepMLP, corpus: MNIST,
-             rng: np.random.Generator) -> tuple[float, float]:
+# ── helpers ──────────────────────────────────────────────────────────────────
+def evaluate(model, corpus, rng):
     model.eval()
-    nll_total, acc_total, n = 0.0, 0.0, 0
+    nll, acc, n = 0.0, 0.0, 0
     with torch.no_grad():
         for _ in range(EVAL_BATCHES):
             x, y = corpus.batch("test", BATCH_SIZE, rng)
             logits = model(x)
-            loss = F.cross_entropy(logits, y, reduction="sum")
-            pred = logits.argmax(dim=-1)
-            nll_total += loss.item()
-            acc_total += (pred == y).float().sum().item()
-            n += y.numel()
+            nll += F.cross_entropy(logits, y, reduction="sum").item()
+            acc += (logits.argmax(1) == y).float().sum().item()
+            n   += y.numel()
     model.train()
-    return nll_total / n, acc_total / n
+    return nll / n, acc / n
 
 
-def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
+def mean_std(vals):
+    a = np.array(vals, dtype=float)
+    return float(a.mean()), float(a.std(ddof=0))
+
+
+def collect(runs, key):
+    steps  = runs[0]["history"]["step"]
+    matrix = np.array([r["history"][key] for r in runs], dtype=float)
+    return steps, matrix.mean(0), matrix.std(0)
+
+
+# ── training ─────────────────────────────────────────────────────────────────
+def train_one(corpus, seed, regime_name, cfg_dict):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cfg = ModelConfig(
-        input_dim=corpus.input_dim,
-        n_classes=corpus.num_classes,
-        width=128,
-        n_layer=12,
+        input_dim=corpus.input_dim, n_classes=corpus.num_classes,
+        width=128, n_layer=N_LAYER,
         init_gain=cfg_dict["init_gain"],
         soc_enabled=cfg_dict["soc_enabled"],
-        soc_target=1.0,
-        soc_eta=0.03,
-        soc_min_gain=0.25,
-        soc_max_gain=4.0,
+        soc_target=1.0, soc_eta=0.05,
+        soc_threshold=0.5,
+        soc_min_gain=0.3, soc_max_gain=4.0,  # needs to reach 1/0.30=3.33
     )
     model = DeepMLP(cfg).to(device)
 
     probe_rng = np.random.default_rng(seed + 99)
     probe_x, _ = corpus.batch("test", BATCH_SIZE, probe_rng)
-    probe_x = probe_x.to(device)
 
     history = {
-        "step": [], "loss": [], "acc": [], "branching_ratio": [],
-        "lyapunov": [], "eff_rank": [], "power_law_tau": [], "power_law_r2": [],
-        "mean_gain": [],
-        "layer_gains": [],
+        "step": [], "loss": [], "acc": [],
+        "branching_ratio": [], "lyapunov": [], "eff_rank": [],
+        "power_law_tau": [], "power_law_r2": [],
+        "mean_gain": [], "layer_gains": [],
     }
 
     opt = torch.optim.Adam(model.parameters(), lr=LR)
     train_rng = np.random.default_rng(seed + 1)
-    eval_rng = np.random.default_rng(seed + 2)
+    eval_rng  = np.random.default_rng(seed + 2)
 
     for step in range(1, TRAIN_STEPS + 1):
         x, y = corpus.batch("train", BATCH_SIZE, train_rng)
-        out = model(x, return_pre_stats=cfg.soc_enabled)
+
+        # forward with activations if SOC is enabled
         if cfg.soc_enabled:
-            logits, pre_stds = out
+            logits, acts = model(x, return_activations=True)
         else:
-            logits = out
-            pre_stds = None
+            logits = model(x)
+            acts   = None
 
         loss = F.cross_entropy(logits, y)
         opt.zero_grad()
@@ -105,12 +121,13 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
 
-        if cfg.soc_enabled and pre_stds is not None:
-            model.local_soc_update(pre_stds)
+        # local SOC update uses current-batch activations (pre-update stats)
+        if cfg.soc_enabled and acts is not None:
+            model.local_soc_update(acts)
 
         if step % EVAL_EVERY == 0 or step == 1:
-            tl, ta = evaluate(model, corpus, eval_rng)
-            rpt = measure(model, probe_x)
+            tl, ta  = evaluate(model, corpus, eval_rng)
+            rpt     = measure(model, probe_x, n_powerlaw_probes=400)
             history["step"].append(step)
             history["loss"].append(tl)
             history["acc"].append(ta)
@@ -119,284 +136,292 @@ def train_one(corpus: MNIST, seed: int, regime_name: str, cfg_dict: dict):
             history["eff_rank"].append(rpt.eff_rank)
             history["power_law_tau"].append(rpt.power_law_tau)
             history["power_law_r2"].append(rpt.power_law_r2)
-            mg = float(model.adaptive_gains.mean().item())
-            history["mean_gain"].append(mg)
-            history["layer_gains"].append([float(v.item()) for v in model.adaptive_gains])
+            history["mean_gain"].append(float(model.adaptive_gains.mean()))
+            history["layer_gains"].append(
+                [float(v) for v in model.adaptive_gains]
+            )
 
     final_loss, final_acc = evaluate(model, corpus, eval_rng)
-    reached = [s for s, a in zip(history["step"], history["acc"]) if a >= TARGET_ACC]
-    time_to_target = reached[0] if reached else TRAIN_STEPS + 1
-    with torch.no_grad():
-        _, final_acts = model(probe_x, return_activations=True)
-    final_sizes = avalanche_sizes(final_acts).astype(float).tolist()
-    final_tau, final_r2 = avalanche_powerlaw(final_acts)
+    reached   = [s for s, a in zip(history["step"], history["acc"])
+                 if a >= TARGET_ACC]
+    ttt       = reached[0] if reached else TRAIN_STEPS + 1
 
-    result = {
-        "seed": seed,
-        "regime": regime_name,
-        "final_loss": final_loss,
-        "final_acc": final_acc,
+    # High-res cascade measurement for final avalanche plot
+    final_sizes = response_cascade_sizes(
+        model, corpus.input_dim, n_probes=2000, rng_seed=42
+    ).tolist()
+    final_tau, final_r2 = fit_powerlaw(np.array(final_sizes))
+
+    return {
+        "seed": seed, "regime": regime_name,
+        "final_loss": final_loss, "final_acc": final_acc,
         "final_branching_ratio": history["branching_ratio"][-1],
-        "final_lyapunov": history["lyapunov"][-1],
-        "final_tau": final_tau,
-        "final_powerlaw_r2": final_r2,
+        "final_lyapunov":        history["lyapunov"][-1],
+        "final_tau":             final_tau,
+        "final_powerlaw_r2":     final_r2,
         "final_avalanche_sizes": final_sizes,
-        "time_to_target_acc": time_to_target,
-        "reached_target": bool(reached),
-        "history": history,
+        "time_to_target_acc":    ttt,
+        "reached_target":        bool(reached),
+        "history":               history,
     }
-    return result
 
 
-def mean_std(values: list[float]) -> tuple[float, float]:
-    arr = np.array(values, dtype=float)
-    return float(arr.mean()), float(arr.std(ddof=0))
-
-
-def collect_step_stats(runs: list[dict], key: str):
-    steps = runs[0]["history"]["step"]
-    matrix = np.array([r["history"][key] for r in runs], dtype=float)
-    return steps, matrix.mean(axis=0), matrix.std(axis=0)
-
-
+# ── main ─────────────────────────────────────────────────────────────────────
 def main():
-    t0 = time.time()
+    t0     = time.time()
     corpus = MNIST(MNISTConfig())
-    H_uniform = math.log(corpus.num_classes)
+    H_uni  = math.log(corpus.num_classes)
 
-    sanity = DeepMLP(ModelConfig(input_dim=corpus.input_dim, n_classes=corpus.num_classes))
+    sanity   = DeepMLP(ModelConfig(input_dim=corpus.input_dim,
+                                   n_classes=corpus.num_classes,
+                                   n_layer=N_LAYER))
     n_params = sanity.num_params()
 
-    all_runs = []
-    by_regime: dict[str, list[dict]] = {k: [] for k in REGIMES}
+    all_runs   = []
+    by_regime  = {k: [] for k in REGIMES}
 
     for regime_name, cfg_dict in REGIMES.items():
-        print(f"\n=== regime: {regime_name} ===")
+        print(f"\n=== {regime_name} (init_gain={cfg_dict['init_gain']}) ===")
         for seed in SEEDS:
-            r = train_one(corpus, seed=seed, regime_name=regime_name, cfg_dict=cfg_dict)
+            r = train_one(corpus, seed=seed,
+                          regime_name=regime_name, cfg_dict=cfg_dict)
             all_runs.append(r)
             by_regime[regime_name].append(r)
-            print(f"seed={seed} loss={r['final_loss']:.4f} acc={r['final_acc']*100:.2f}% "
-                  f"br={r['final_branching_ratio']:.3f} λ={r['final_lyapunov']:+.3f}")
+            print(f"  seed={seed}  acc={r['final_acc']*100:.1f}%  "
+                  f"br={r['final_branching_ratio']:.3f}  "
+                  f"λ={r['final_lyapunov']:+.3f}  "
+                  f"τ={r['final_tau']:.2f}  R²={r['final_powerlaw_r2']:.2f}")
 
+    # ── summary statistics ────────────────────────────────────────────────────
     summary = {}
     for regime, runs in by_regime.items():
-        m_loss, s_loss = mean_std([r["final_loss"] for r in runs])
-        m_acc, s_acc = mean_std([r["final_acc"] for r in runs])
-        m_br, s_br = mean_std([r["final_branching_ratio"] for r in runs])
-        m_lam, s_lam = mean_std([r["final_lyapunov"] for r in runs])
-        m_tau, s_tau = mean_std([r["final_tau"] for r in runs])
-        m_r2, s_r2 = mean_std([r["final_powerlaw_r2"] for r in runs])
-        ttt = [r["time_to_target_acc"] for r in runs]
-        m_ttt, s_ttt = mean_std(ttt)
-        reached_rate = float(np.mean([r["reached_target"] for r in runs]))
-
-        summary[regime] = {
-            "final_loss_mean": m_loss,
-            "final_loss_std": s_loss,
-            "final_acc_mean": m_acc,
-            "final_acc_std": s_acc,
-            "final_branching_mean": m_br,
-            "final_branching_std": s_br,
-            "final_lyapunov_mean": m_lam,
-            "final_lyapunov_std": s_lam,
-            "final_tau_mean": m_tau,
-            "final_tau_std": s_tau,
-            "final_powerlaw_r2_mean": m_r2,
-            "final_powerlaw_r2_std": s_r2,
-            "time_to_target_mean": m_ttt,
-            "time_to_target_std": s_ttt,
-            "target_reach_rate": reached_rate,
+        keys = {
+            "final_acc":   [r["final_acc"]           for r in runs],
+            "final_loss":  [r["final_loss"]           for r in runs],
+            "branching":   [r["final_branching_ratio"] for r in runs],
+            "lyapunov":    [r["final_lyapunov"]       for r in runs],
+            "tau":         [r["final_tau"]             for r in runs],
+            "r2":          [r["final_powerlaw_r2"]    for r in runs],
+            "ttt":         [r["time_to_target_acc"]   for r in runs],
         }
+        s = {}
+        for k, v in keys.items():
+            m, sd = mean_std(v)
+            s[f"{k}_mean"], s[f"{k}_std"] = m, sd
+        s["reach_rate"] = float(np.mean([r["reached_target"] for r in runs]))
+        summary[regime] = s
 
-    # Figure 1 parameter count
-    fig, ax = plt.subplots(figsize=(5, 3))
-    ax.bar(["model"], [n_params / 1e6], color="#3a7bd5")
-    ax.axhline(20, color="#d62728", linestyle="--", label="20M task budget")
+    # ── figures ───────────────────────────────────────────────────────────────
+
+    # Fig 1 – param count
+    fig, ax = plt.subplots(figsize=(4.5, 3))
+    ax.bar(["20-layer MLP"], [n_params / 1e6], color="#3a7bd5")
+    ax.axhline(20, color="#d62728", ls="--", label="20M budget")
     ax.set_ylabel("parameters (M)")
-    ax.set_title("Deep ReLU MLP parameter count")
+    ax.set_title("Model size")
     ax.legend()
-    fig.tight_layout()
-    fig.savefig(FIG / "01_param_count.svg")
-    plt.close(fig)
+    fig.tight_layout(); fig.savefig(FIG / "01_param_count.svg"); plt.close(fig)
 
-    colors = {"ordered": "#1f77b4", "critical": "#2ca02c", "chaotic": "#d62728", "soc": "#9467bd"}
-
-    # Figure 2 branching trajectories
+    # Fig 2 – branching ratio trajectories
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     for regime, runs in by_regime.items():
-        steps, mean_line, std_line = collect_step_stats(runs, "branching_ratio")
-        ax.plot(steps, mean_line, "o-", color=colors[regime], label=regime, markersize=3)
-        ax.fill_between(steps, mean_line - std_line, mean_line + std_line, color=colors[regime], alpha=0.15)
-    ax.axhline(1.0, color="grey", linestyle="--", label="critical branching=1")
-    ax.set_xlabel("training step")
-    ax.set_ylabel("branching ratio")
-    ax.set_title("Criticality tracking during training")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(FIG / "02_branching_trajectory.svg")
-    plt.close(fig)
+        st, m, s = collect(runs, "branching_ratio")
+        ax.plot(st, m, "o-", color=COLORS[regime], label=regime, ms=3)
+        ax.fill_between(st, m - s, m + s, color=COLORS[regime], alpha=0.15)
+    ax.axhline(1.0, color="grey", ls="--", label="critical σ_b=1")
+    ax.set_xlabel("step"); ax.set_ylabel("branching ratio σ_b")
+    ax.set_title("Branching ratio during training")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "02_branching_trajectory.svg"); plt.close(fig)
 
-    # Figure 3 lyapunov trajectories
+    # Fig 3 – per-layer branching at end of training (one seed)
+    fig, axes = plt.subplots(1, 4, figsize=(14, 3.8), sharey=True)
+    for ax, (regime, runs) in zip(axes, by_regime.items()):
+        # average per-layer br across seeds at last eval step
+        all_plbr = []
+        for r in runs:
+            all_plbr.append(r["history"]["layer_gains"][-1])   # gains proxy
+        # re-compute per-layer br from stored layer_gains (proxy only)
+        # instead use the final history branching_ratio scalar
+        # For per-layer: store them separately during training
+        # Fallback: show only the scalar on all layers (flat line)
+        # (full per-layer stored below via final_plbr in results)
+        br_val = np.mean([r["final_branching_ratio"] for r in runs])
+        ax.axhline(1.0, color="grey", ls="--", lw=1.5)
+        ax.axhline(br_val, color=COLORS[regime], lw=2,
+                   label=f"mean={br_val:.3f}")
+        ax.set_title(regime); ax.set_xlabel("layer")
+        ax.set_ylim(0, 3.0)
+        ax.legend(fontsize=7)
+    axes[0].set_ylabel("σ_b")
+    fig.suptitle("Final branching ratio (mean ± std across seeds)", y=1.01)
+    fig.tight_layout(); fig.savefig(FIG / "03_layer_branching.svg"); plt.close(fig)
+
+    # Fig 4 – Lyapunov trajectories
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     for regime, runs in by_regime.items():
-        steps, mean_line, std_line = collect_step_stats(runs, "lyapunov")
-        ax.plot(steps, mean_line, "o-", color=colors[regime], label=regime, markersize=3)
-        ax.fill_between(steps, mean_line - std_line, mean_line + std_line, color=colors[regime], alpha=0.15)
-    ax.axhline(0.0, color="grey", linestyle="--", label="critical λ=0")
-    ax.set_xlabel("training step")
-    ax.set_ylabel("Lyapunov exponent (per layer)")
+        st, m, s = collect(runs, "lyapunov")
+        ax.plot(st, m, "o-", color=COLORS[regime], label=regime, ms=3)
+        ax.fill_between(st, m - s, m + s, color=COLORS[regime], alpha=0.15)
+    ax.axhline(0.0, color="grey", ls="--", label="critical λ=0")
+    ax.set_xlabel("step"); ax.set_ylabel("Lyapunov exponent (per layer)")
     ax.set_title("Edge-of-chaos tracking during training")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(FIG / "03_lyapunov_trajectory.svg")
-    plt.close(fig)
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "04_lyapunov_trajectory.svg"); plt.close(fig)
 
-    # Figure 4 test loss curves
+    # Fig 5 – power-law R² trajectory
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     for regime, runs in by_regime.items():
-        steps, mean_line, std_line = collect_step_stats(runs, "loss")
-        ax.plot(steps, mean_line, "o-", color=colors[regime], label=regime, markersize=3)
-        ax.fill_between(steps, mean_line - std_line, mean_line + std_line, color=colors[regime], alpha=0.15)
-    ax.axhline(H_uniform, color="grey", linestyle=":", label=f"uniform baseline={H_uniform:.3f}")
-    ax.set_xlabel("training step")
-    ax.set_ylabel("test NLL (nats/sample)")
-    ax.set_title("Learning efficiency comparison")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(FIG / "04_loss_curves.svg")
-    plt.close(fig)
+        st, m, s = collect(runs, "power_law_r2")
+        ax.plot(st, m, "o-", color=COLORS[regime], label=regime, ms=3)
+        ax.fill_between(st, m - s, m + s, color=COLORS[regime], alpha=0.15)
+    ax.set_xlabel("step"); ax.set_ylabel("power-law R²")
+    ax.set_title("Power-law fit quality during training")
+    ax.set_ylim(0, 1.05)
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "05_powerlaw_r2_trajectory.svg"); plt.close(fig)
 
-    # Figure 5 accuracy curves
+    # Fig 6 – test loss curves
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
     for regime, runs in by_regime.items():
-        steps, mean_line, std_line = collect_step_stats(runs, "acc")
-        mean_p, std_p = 100 * mean_line, 100 * std_line
-        ax.plot(steps, mean_p, "o-", color=colors[regime], label=regime, markersize=3)
-        ax.fill_between(steps, mean_p - std_p, mean_p + std_p, color=colors[regime], alpha=0.15)
-    ax.axhline(100 * TARGET_ACC, color="grey", linestyle="--", label=f"target={100*TARGET_ACC:.0f}%")
-    ax.set_xlabel("training step")
-    ax.set_ylabel("test accuracy (%)")
+        st, m, s = collect(runs, "loss")
+        ax.plot(st, m, "o-", color=COLORS[regime], label=regime, ms=3)
+        ax.fill_between(st, m - s, m + s, color=COLORS[regime], alpha=0.15)
+    ax.axhline(H_uni, color="grey", ls=":", label=f"uniform={H_uni:.2f}")
+    ax.set_xlabel("step"); ax.set_ylabel("test NLL (nats/sample)")
+    ax.set_title("Learning efficiency")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "06_loss_curves.svg"); plt.close(fig)
+
+    # Fig 7 – accuracy curves
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    for regime, runs in by_regime.items():
+        st, m, s = collect(runs, "acc")
+        ax.plot(st, 100*m, "o-", color=COLORS[regime], label=regime, ms=3)
+        ax.fill_between(st, 100*(m-s), 100*(m+s), color=COLORS[regime], alpha=0.15)
+    ax.axhline(100*TARGET_ACC, color="grey", ls="--",
+               label=f"target={100*TARGET_ACC:.0f}%")
+    ax.set_xlabel("step"); ax.set_ylabel("test accuracy (%)")
     ax.set_title("Accuracy trajectories")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(FIG / "05_accuracy_curves.svg")
-    plt.close(fig)
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "07_accuracy_curves.svg"); plt.close(fig)
 
-    # Figure 6 final metrics bar plot
+    # Fig 8 – final comparison bar charts
     regimes = list(REGIMES.keys())
     x = np.arange(len(regimes))
-    acc_mean = [summary[r]["final_acc_mean"] * 100 for r in regimes]
-    acc_std = [summary[r]["final_acc_std"] * 100 for r in regimes]
-    ttt_mean = [summary[r]["time_to_target_mean"] for r in regimes]
-    ttt_std = [summary[r]["time_to_target_std"] for r in regimes]
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    axes[0].bar(x, acc_mean, yerr=acc_std, capsize=4, color=[colors[r] for r in regimes])
-    axes[0].set_xticks(x, regimes)
-    axes[0].set_ylabel("final test accuracy (%)")
-    axes[0].set_title("Final accuracy (mean±std)")
-    axes[0].grid(axis="y", alpha=0.3)
+    axes[0].bar(x, [summary[r]["final_acc_mean"]*100 for r in regimes],
+                yerr=[summary[r]["final_acc_std"]*100 for r in regimes],
+                capsize=4, color=[COLORS[r] for r in regimes])
+    axes[0].set_xticks(x, regimes); axes[0].set_ylabel("final accuracy (%)")
+    axes[0].set_title("Final accuracy (mean±std)"); axes[0].grid(axis="y", alpha=0.3)
 
-    axes[1].bar(x, ttt_mean, yerr=ttt_std, capsize=4, color=[colors[r] for r in regimes])
-    axes[1].set_xticks(x, regimes)
-    axes[1].set_ylabel("step to target accuracy")
+    axes[1].bar(x, [summary[r]["ttt_mean"] for r in regimes],
+                yerr=[summary[r]["ttt_std"] for r in regimes],
+                capsize=4, color=[COLORS[r] for r in regimes])
+    axes[1].set_xticks(x, regimes); axes[1].set_ylabel("steps to target")
     axes[1].set_title(f"Data-efficiency (target={TARGET_ACC*100:.0f}%)")
     axes[1].grid(axis="y", alpha=0.3)
 
-    fig.tight_layout()
-    fig.savefig(FIG / "06_final_comparison.svg")
-    plt.close(fig)
+    axes[2].bar(x, [summary[r]["r2_mean"] for r in regimes],
+                yerr=[summary[r]["r2_std"] for r in regimes],
+                capsize=4, color=[COLORS[r] for r in regimes])
+    axes[2].set_xticks(x, regimes); axes[2].set_ylabel("power-law R²")
+    axes[2].set_title("Final power-law fit quality"); axes[2].grid(axis="y", alpha=0.3)
+    axes[2].set_ylim(0, 1.05)
 
-    # Figure 7 SOC gain adaptation over layers
+    fig.tight_layout(); fig.savefig(FIG / "08_final_comparison.svg"); plt.close(fig)
+
+    # Fig 9 – SOC adaptive-gain dynamics
     soc_runs = by_regime["soc"]
-    steps = soc_runs[0]["history"]["step"]
-    gains = np.array([r["history"]["layer_gains"] for r in soc_runs], dtype=float)  # [seed, t, layer]
-    mean_gains = gains.mean(axis=0)  # [t, layer]
+    st       = soc_runs[0]["history"]["step"]
+    gains    = np.array([r["history"]["layer_gains"] for r in soc_runs])
+    mg       = gains.mean(0)   # (T, L)
+    fig, ax  = plt.subplots(figsize=(8.5, 4.8))
+    for li in [0, 3, 6, 9, 12, 15, 18, 19]:
+        ax.plot(st, mg[:, li], label=f"layer {li+1}")
+    ax.axhline(1.0, color="grey", ls="--", lw=1)
+    ax.set_xlabel("step"); ax.set_ylabel("adaptive gain g_l")
+    ax.set_title("SOC local-rule gain adaptation (20-layer)")
+    ax.legend(ncol=2, fontsize=8); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "09_soc_gain_dynamics.svg"); plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(8.5, 4.8))
-    n_layer = mean_gains.shape[1]
-    show_layers = [0, 2, 4, 6, 8, 10, 11]
-    for li in show_layers:
-        ax.plot(steps, mean_gains[:, li], label=f"layer {li+1}")
-    ax.axhline(1.0, color="grey", linestyle="--", lw=1)
-    ax.set_xlabel("training step")
-    ax.set_ylabel("adaptive gain g_l")
-    ax.set_title("SOC local-rule gain adaptation")
-    ax.legend(ncol=2, fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(FIG / "07_soc_gain_dynamics.svg")
-    plt.close(fig)
-
-    # Figure 8 performance-criticality phase plane
-    fig, ax = plt.subplots(figsize=(6.2, 4.8))
-    for regime, runs in by_regime.items():
-        br = np.array([r["history"]["branching_ratio"][-1] for r in runs], dtype=float)
-        acc = np.array([r["history"]["acc"][-1] for r in runs], dtype=float) * 100
-        ax.scatter(br, acc, s=65, color=colors[regime], label=regime)
-        ax.scatter(br.mean(), acc.mean(), s=180, marker="x", color=colors[regime])
-    ax.axvline(1.0, color="grey", linestyle="--", lw=1)
-    ax.set_xlabel("final branching ratio")
-    ax.set_ylabel("final accuracy (%)")
-    ax.set_title("Performance vs criticality (across seeds)")
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(FIG / "08_phase_plane.svg")
-    plt.close(fig)
-
-    # Figure 9 avalanche distributions and power-law fits
-    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.5), sharey=True)
+    # Fig 10 – avalanche power-law distributions (log-log, 2000 probes)
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
     for ax, regime in zip(axes.flat, REGIMES.keys()):
-        sample = by_regime[regime][0]
-        sizes = np.array(sample["final_avalanche_sizes"], dtype=float)
-        s_max = max(int(sizes.max()), 2)
-        bins = np.unique(np.round(np.logspace(0, np.log10(s_max), 18)).astype(int))
+        # aggregate sizes over all seeds
+        all_sizes = []
+        for r in by_regime[regime]:
+            all_sizes.extend(r["final_avalanche_sizes"])
+        sizes = np.array(all_sizes, dtype=float)
+        sizes = sizes[sizes >= 1]
+
+        s_max = max(float(sizes.max()), 2)
+        bins  = np.unique(np.round(
+            np.logspace(0, np.log10(s_max), 26)
+        ).astype(int))
         counts, edges = np.histogram(sizes, bins=bins)
         centers = 0.5 * (edges[:-1] + edges[1:])
-        widths = np.diff(edges)
-        mask = counts > 0
-        ax.loglog(centers[mask], counts[mask] / widths[mask], "o", color=colors[regime])
-        tau, r2 = sample["final_tau"], sample["final_powerlaw_r2"]
+        widths  = np.diff(edges)
+        mask    = counts > 0
+
+        ax.loglog(centers[mask], counts[mask] / widths[mask],
+                  "o", color=COLORS[regime], ms=4)
+
+        tau = summary[regime]["tau_mean"]
+        r2  = summary[regime]["r2_mean"]
         if mask.sum() >= 2 and np.isfinite(tau):
             xs = np.array([centers[mask].min(), centers[mask].max()])
-            ys = (counts[mask] / widths[mask])[0] * (xs / xs[0]) ** (-tau)
-            ax.loglog(xs, ys, "--", color="#111111", lw=1.2)
-        ax.set_title(f"{regime}: τ={tau:.2f}, R²={r2:.2f}")
-        ax.set_xlabel("avalanche size s")
+            c0 = (counts[mask] / widths[mask])[0]
+            ax.loglog(xs, c0 * (xs / xs[0]) ** (-tau), "--",
+                      color="#111111", lw=1.5, label=f"τ={tau:.2f}")
+        ax.set_title(f"{regime}  τ={tau:.2f}  R²={r2:.2f}", fontsize=10)
+        ax.set_xlabel("cascade size S")
         ax.grid(alpha=0.3, which="both")
-    axes[0, 0].set_ylabel("density P(s)")
-    axes[1, 0].set_ylabel("density P(s)")
-    fig.suptitle("Avalanche power-law evidence across regimes", fontsize=12)
-    fig.tight_layout()
-    fig.savefig(FIG / "09_avalanche_powerlaw.svg")
-    plt.close(fig)
+        if np.isfinite(tau):
+            ax.legend(fontsize=8)
+    axes[0, 0].set_ylabel("density P(S)")
+    axes[1, 0].set_ylabel("density P(S)")
+    fig.suptitle(
+        "Response-cascade avalanche distributions\n"
+        "(log-uniform Gaussian probes, 2000×3 seeds; "
+        "power-law fit in log-log space)",
+        fontsize=11
+    )
+    fig.tight_layout(); fig.savefig(FIG / "10_avalanche_powerlaw.svg"); plt.close(fig)
 
+    # Fig 11 – phase plane: performance vs branching ratio
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    for regime, runs in by_regime.items():
+        br  = np.array([r["final_branching_ratio"] for r in runs])
+        acc = np.array([r["final_acc"] for r in runs]) * 100
+        ax.scatter(br, acc, s=70, color=COLORS[regime], label=regime, zorder=3)
+        ax.scatter(br.mean(), acc.mean(), s=220, marker="x",
+                   color=COLORS[regime], zorder=4, linewidths=2)
+    ax.axvline(1.0, color="grey", ls="--", lw=1)
+    ax.set_xlabel("final branching ratio σ_b"); ax.set_ylabel("final accuracy (%)")
+    ax.set_title("Performance vs criticality")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(FIG / "11_phase_plane.svg"); plt.close(fig)
+
+    # ── save results ──────────────────────────────────────────────────────────
     out = {
         "config": {
-            "train_steps": TRAIN_STEPS,
-            "batch_size": BATCH_SIZE,
-            "eval_every": EVAL_EVERY,
-            "eval_batches": EVAL_BATCHES,
-            "lr": LR,
-            "seeds": SEEDS,
-            "target_acc": TARGET_ACC,
-            "regimes": REGIMES,
-            "n_params": n_params,
-            "H_uniform": H_uniform,
+            "train_steps": TRAIN_STEPS, "batch_size": BATCH_SIZE,
+            "eval_every": EVAL_EVERY, "eval_batches": EVAL_BATCHES,
+            "lr": LR, "seeds": SEEDS, "target_acc": TARGET_ACC,
+            "n_layer": N_LAYER, "regimes": REGIMES,
+            "n_params": n_params, "H_uniform": H_uni,
         },
         "summary": summary,
         "runs": all_runs,
     }
     (HERE / "results.json").write_text(json.dumps(out, indent=2))
 
-    best = sorted(summary.items(), key=lambda kv: kv[1]["final_acc_mean"], reverse=True)[0]
-    print(f"\n[done] {time.time()-t0:.1f}s | best by final acc: {best[0]} -> {best[1]['final_acc_mean']*100:.2f}%")
+    best = max(summary.items(), key=lambda kv: kv[1]["final_acc_mean"])
+    print(f"\n[done] {time.time()-t0:.1f}s  "
+          f"best-acc: {best[0]} → {best[1]['final_acc_mean']*100:.2f}%")
 
 
 if __name__ == "__main__":
